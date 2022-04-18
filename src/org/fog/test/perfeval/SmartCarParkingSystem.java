@@ -28,22 +28,26 @@ import org.fog.utils.distribution.DeterministicDistribution;
 import java.util.*;
 
 public class SmartCarParkingSystem {
-
+    // list of fog devices
     static List<FogDevice> fogDevices = new ArrayList<FogDevice>();
 
+    // list of sensors
     static List<Sensor> sensors = new ArrayList<Sensor>();
 
+    // list of actuators (for displaying output) (LED)
     static List<Actuator> actuators = new ArrayList<Actuator>();
 
+    // number of fog nodes/ parking slots (one fog node for one parking slot)
     static int numberOfAreas = 1;
+
+    // number of cameras in parking slot
     static int numberOfCamerasPerArea = 2;
+
+    // camera takes picture after every x seconds. In our case x is 5
     static double CAM_TRANSMISSION_TIME = 5;
 
+    // if [IS_CLOUD] is true, data is transferred to cloud directly. If false, data is transferred to fog first.
     private static boolean IS_CLOUD = false;
-
-    static String pictureCaptureKey = "picture-capture";
-    static String slotDetectorKey = "slot-detector";
-    static String cameraKey = "CAMERA";
 
 
     public static void main(String[] args) {
@@ -67,6 +71,15 @@ public class SmartCarParkingSystem {
 
             createFogDevices(fogBroker.getId(), appId);
 
+            /*
+
+            Module is processing machine.
+            One fog node can contain multiple modules.
+            Module is basically a virtual machine. (dedicated to perform a specific simple task)
+
+            In the expressions below, we are adding modules (VM) to fog nodes to perform specific actions.
+
+            * */
             ModuleMapping moduleMapping = ModuleMapping.createModuleMapping();
 
             for (FogDevice fogDevice: fogDevices) {
@@ -107,34 +120,44 @@ public class SmartCarParkingSystem {
     }
 
     private static void createFogDevices(int userId, String appId) {
+        // creating cloud device on top of the hierarchy.
         FogDevice cloud = createFogDevice("cloud", 44800, 40000, 100, 10000, 0, 0.01, 16*103, 16*83.25);
+        // setting parentId as -1, indicating there is no parent of this fog node.
         cloud.setParentId(-1);
         fogDevices.add(cloud);
 
+        // creating proxy server as child of cloud.
         FogDevice proxy = createFogDevice("proxy-server", 2800, 4000, 10000, 10000, 1, 0, 107.339, 83.433);
+        // setting cloud as parent of this proxy server
         proxy.setParentId(cloud.getId());
         proxy.setUplinkLatency(100);
         fogDevices.add(proxy);
+
+        // creating multiple fog nodes for each area under this proxy server
         for (int i = 0; i < numberOfAreas; i++) {
             addArea(i + "", userId, appId, proxy.getId());
         }
     }
 
     private static FogDevice addArea(String id, int userId, String appId, int parentId) {
+        // here we are assuming that router is acting like the fog device
         FogDevice router = createFogDevice("router-" + id, 2800, 4000, 1000, 10000, 2, 0.0, 107.339, 83.4333);
         fogDevices.add(router);
         router.setUplinkLatency(2);
+        router.setParentId(parentId);
+
+        // creating multiple cameras under one router
         for (int i = 0; i < numberOfCamerasPerArea; i++) {
             String cameraId = i + "-of-router-" + id;
             FogDevice camera = addCamera(cameraId, userId, appId, router.getId());
             camera.setUplinkLatency(2);
             fogDevices.add(camera);
         }
-        router.setParentId(parentId);
         return router;
     }
 
     private static FogDevice addCamera(String id, int userId, String appId, int parentId) {
+        // creating camera fog node under a router
         FogDevice camera = createFogDevice("camera-" + id, 500, 1000, 10000, 10000, 3, 0, 87.53, 82.44);
         camera.setParentId(parentId);
 
