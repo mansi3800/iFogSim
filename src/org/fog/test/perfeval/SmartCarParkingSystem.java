@@ -14,10 +14,16 @@ import org.fog.application.AppLoop;
 import org.fog.application.Application;
 import org.fog.application.selectivity.FractionalSelectivity;
 import org.fog.entities.*;
+import org.fog.placement.Controller;
+import org.fog.placement.ModuleMapping;
+import org.fog.placement.ModulePlacementEdgewards;
+import org.fog.placement.ModulePlacementMapping;
 import org.fog.policy.AppModuleAllocationPolicy;
 import org.fog.scheduler.StreamOperatorScheduler;
 import org.fog.utils.FogLinearPowerModel;
 import org.fog.utils.FogUtils;
+import org.fog.utils.TimeKeeper;
+import org.fog.utils.distribution.DeterministicDistribution;
 
 import java.util.*;
 
@@ -59,8 +65,40 @@ public class SmartCarParkingSystem {
             Application application = createApplication(appId, fogBroker.getId());
             application.setUserId(fogBroker.getId());
 
+            createFogDevices(fogBroker.getId(), appId);
 
+            ModuleMapping moduleMapping = ModuleMapping.createModuleMapping();
 
+            for (FogDevice fogDevice: fogDevices) {
+                if (fogDevice.getName().startsWith("camera") || fogDevice.getName().startsWith("cloud")) {
+                    moduleMapping.addModuleToDevice("picture-capture", fogDevice.getName());
+                }
+            }
+
+            for (FogDevice fogDevice: fogDevices) {
+                if (fogDevice.getName().startsWith("router")) {
+                    moduleMapping.addModuleToDevice("slot-detector", fogDevice.getName());
+                }
+            }
+
+            if (IS_CLOUD) {
+                moduleMapping.addModuleToDevice("picute-capture", "cloud");
+                moduleMapping.addModuleToDevice("slot-detector", "cloud");
+            }
+
+            Controller controller = new Controller("master-controller", fogDevices, sensors, actuators);
+
+            if (IS_CLOUD) {
+                controller.submitApplication(application, new ModulePlacementMapping(fogDevices, application, moduleMapping));
+            } else {
+                controller.submitApplication(application, new ModulePlacementEdgewards(fogDevices, sensors, actuators, application, moduleMapping));
+            }
+
+            TimeKeeper.getInstance().setSimulationStartTime(Calendar.getInstance().getTimeInMillis());
+            CloudSim.startSimulation();
+            CloudSim.stopSimulation();
+
+            Log.printLine("Simulation finished");
         } catch (Exception e) {
             e.printStackTrace();
             Log.printLine("Unwanted error occurred");
@@ -78,25 +116,42 @@ public class SmartCarParkingSystem {
         proxy.setUplinkLatency(100);
         fogDevices.add(proxy);
         for (int i = 0; i < numberOfAreas; i++) {
-            // addArea();
+            addArea(i + "", userId, appId, proxy.getId());
         }
-
     }
 
+    private static FogDevice addArea(String id, int userId, String appId, int parentId) {
+        FogDevice router = createFogDevice("router-" + id, 2800, 4000, 1000, 10000, 2, 0.0, 107.339, 83.4333);
+        fogDevices.add(router);
+        router.setUplinkLatency(2);
+        for (int i = 0; i < numberOfCamerasPerArea; i++) {
+            String cameraId = i + "-of-router-" + id;
+            FogDevice camera = addCamera(cameraId, userId, appId, router.getId());
+            camera.setUplinkLatency(2);
+            fogDevices.add(camera);
+        }
+        router.setParentId(parentId);
+        return router;
+    }
 
-    /**
-     * Creates a vanilla fog device
-     * @param nodeName name of the device to be used in simulation
-     * @param mips MIPS
-     * @param ram RAM
-     * @param upBw uplink bandwidth
-     * @param downBw downlink bandwidth
-     * @param level hierarchy level of the device
-     * @param ratePerMips cost rate per MIPS used
-     * @param busyPower
-     * @param idlePower
-     * @return
-     */
+    private static FogDevice addCamera(String id, int userId, String appId, int parentId) {
+        FogDevice camera = createFogDevice("camera-" + id, 500, 1000, 10000, 10000, 3, 0, 87.53, 82.44);
+        camera.setParentId(parentId);
+
+        Sensor sensor = new Sensor("sensor-" + id, "camera", userId, appId, new DeterministicDistribution(CAM_TRANSMISSION_TIME));
+        sensors.add(sensor);
+
+        Actuator actuator = new Actuator("ptz-" + id, userId, appId, "PTZ_CONTROL");
+        actuators.add(actuator);
+
+        sensor.setGatewayDeviceId(camera.getId());
+        sensor.setLatency(40.0);
+
+        actuator.setGatewayDeviceId(parentId);
+        actuator.setLatency(1.0);
+        return  camera;
+    }
+
     private static FogDevice createFogDevice(String nodeName, long mips,
                                              int ram, long upBw, long downBw, int level, double ratePerMips, double busyPower, double idlePower) {
 
@@ -118,10 +173,8 @@ public class SmartCarParkingSystem {
                 new StreamOperatorScheduler(peList),
                 new FogLinearPowerModel(busyPower, idlePower)
         );
-
         List<Host> hostList = new ArrayList<Host>();
         hostList.add(host);
-
         String arch = "x86"; // system architecture
         String os = "Linux"; // operating system
         String vmm = "Xen";
@@ -133,11 +186,9 @@ public class SmartCarParkingSystem {
         double costPerBw = 0.0; // the cost of using bw in this resource
         LinkedList<Storage> storageList = new LinkedList<Storage>(); // we are not adding SAN
         // devices by now
-
         FogDeviceCharacteristics characteristics = new FogDeviceCharacteristics(
                 arch, os, vmm, host, time_zone, cost, costPerMem,
                 costPerStorage, costPerBw);
-
         FogDevice fogdevice = null;
         try {
             fogdevice = new FogDevice(nodeName, characteristics,
@@ -145,7 +196,6 @@ public class SmartCarParkingSystem {
         } catch (Exception e) {
             e.printStackTrace();
         }
-
         fogdevice.setLevel(level);
         return fogdevice;
     }
@@ -163,7 +213,7 @@ public class SmartCarParkingSystem {
         application.addAppModule("picture-capture", 10);
         application.addAppModule("slot-detector", 10);
 
-        application.addAppEdge("camera", "slot-detector", 1000, 500, "camera", Tuple.UP, AppEdge.SENSOR);
+        application.addAppEdge("camera", "picture-capture", 1000, 500, "camera", Tuple.UP, AppEdge.SENSOR);
         application.addAppEdge("picture-capture", "slot-detector", 1000, 500, "slots", Tuple.UP, AppEdge.MODULE);
 
         application.addAppEdge("slot-detector", "PTZ_CONTROL", 100, 28, 100, "PTZ_PARAMS", Tuple.UP, AppEdge.ACTUATOR);
